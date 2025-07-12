@@ -218,7 +218,9 @@ If you want to avoid interactive authentication prompts, add environment variabl
 
 ## 🔒 Security Best Practice
 
-**Recommended**: Use the default configuration without credentials. The server will securely prompt for authentication when needed, keeping your secrets out of configuration files. Only add credentials to the configuration if you need fully automated operation.
+**Recommended**: Use the default configuration without credentials. The server will securely prompt for authentication when needed, keeping your secrets out of configuration files. Only add credentials to the configuration if you need fully automated operation. 
+
+You do not need to add Secrets to the environment variables; the mcp server will ask for them if they are left out but you have the other IDs set. 
 
 ## 📄 License
 

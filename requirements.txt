@@ -1,0 +1,21 @@
+# Core MCP dependencies
+mcp>=1.0.0
+
+# Pydantic for settings management
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Azure dependencies
+azure-identity>=1.15.0
+
+# HTTP client for Graph API
+httpx>=0.25.0
+
+# File handling
+aiofiles>=23.2.1
+
+# Logging (built-in to Python, but listing for completeness)
+# logging (built-in)
+
+# Async support (built-in to Python 3.11+)
+# asyncio (built-in) 

@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  unified-microsoft-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unified-microsoft-mcp
+    environment:
+      # General settings
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/tmp/unified_mcp.log
+      
+      # Azure CLI settings (optional - for service principal authentication)
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      - AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID:-}
+      
+      # Microsoft Graph settings (optional - for custom app registration)
+      - CUSTOM_CLIENT_ID=${CUSTOM_CLIENT_ID:-}
+      - CUSTOM_TENANT_ID=${CUSTOM_TENANT_ID:-}
+      - CLIENT_SECRET=${CLIENT_SECRET:-}
+      
+      # Alternative Graph settings (for compatibility)
+      - USE_APP_REG_CLIENTID=${USE_APP_REG_CLIENTID:-}
+      - TENANTID=${TENANTID:-}
+      - GRAPH_CLIENT_SECRET=${GRAPH_CLIENT_SECRET:-}
+      
+      # Timeout settings
+      - COMMAND_TIMEOUT=${COMMAND_TIMEOUT:-300}
+      - OPERATION_TIMEOUT=${OPERATION_TIMEOUT:-300}
+      - MAX_CONCURRENT_COMMANDS=${MAX_CONCURRENT_COMMANDS:-5}
+      - MAX_CONCURRENT_OPERATIONS=${MAX_CONCURRENT_OPERATIONS:-5}
+    
+    volumes:
+      # Mount logs directory for persistent logging
+      - ./logs:/tmp/logs
+      
+      # Mount Azure CLI config directory for persistent authentication
+      - azure-cli-config:/home/app/.azure
+      
+      # Mount a directory for any additional configuration
+      - ./config:/app/config:ro
+    
+    # MCP uses stdio, so we need to keep the container running
+    # and interact with it via stdin/stdout
+    stdin_open: true
+    tty: true
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check (optional)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import unified_mcp; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+volumes:
+  # Persistent volume for Azure CLI configuration
+  azure-cli-config:
+    driver: local
+
+networks:
+  default:
+    name: unified-mcp-network 

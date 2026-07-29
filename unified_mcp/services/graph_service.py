@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-import httpx
+import httpx2 as httpx
 
 from unified_mcp.auth import ServicePrincipalProfile, TokenBroker
 from unified_mcp.config import Settings
@@ -40,7 +40,12 @@ class GraphService:
             self.auth_profile,
             self._device_code_callback,
         )
-        self.logger.info("GraphService initialized with %s authentication", self.auth_profile.kind)
+        self._base_url = f"https://graph.microsoft.com/{settings.graph_api_version}/"
+        self.logger.info(
+            "GraphService initialized with %s authentication against Microsoft Graph %s",
+            self.auth_profile.kind,
+            settings.graph_api_version,
+        )
 
     def _device_code_callback(
         self,
@@ -143,7 +148,7 @@ class GraphService:
                 "auth_required": True,
             }
 
-        url = f"https://graph.microsoft.com/v1.0/{command.lstrip('/')}"
+        url = f"{self._base_url}{command.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {access_token.token}",
             "Content-Type": "application/json",

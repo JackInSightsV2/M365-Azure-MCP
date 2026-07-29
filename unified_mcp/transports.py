@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import Mapping
 from typing import Any, Dict, Literal, Optional
 
+import mcp.types as types
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
+from mcp.server.caching import CacheableMethod, CacheHint
 from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.types import CallToolResult, TextContent
-from pydantic import AnyUrl, BaseModel
+from mcp.shared.exceptions import MCPError
+from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
+from unified_mcp import __version__
 from unified_mcp.application import (
     SERVER_INSTRUCTIONS,
     ToolApplication,
@@ -34,6 +35,27 @@ from unified_mcp.config import Settings
 from unified_mcp.security import HttpSecurityMiddleware
 
 logger = logging.getLogger(__name__)
+
+# The tool and resource surfaces are fixed at startup, so clients on the
+# 2026-07-28 specification may cache list and read results across contexts.
+CACHE_HINTS: Mapping[CacheableMethod, CacheHint] = {
+    "server/discover": CacheHint(ttl_ms=3_600_000, scope="public"),
+    "tools/list": CacheHint(ttl_ms=3_600_000, scope="public"),
+    "resources/list": CacheHint(ttl_ms=3_600_000, scope="public"),
+    "resources/read": CacheHint(ttl_ms=3_600_000, scope="public"),
+}
+
+# Headers the 2026-07-28 transport adds for gateways, plus the legacy session header
+# still sent by clients on the deprecated handshake era.
+MCP_REQUEST_HEADERS = [
+    "Authorization",
+    "Content-Type",
+    "Last-Event-ID",
+    "MCP-Protocol-Version",
+    "Mcp-Method",
+    "Mcp-Name",
+    "Mcp-Session-Id",
+]
 
 
 class AzureCliRequest(BaseModel):
@@ -66,74 +88,100 @@ class GraphResponse(BaseModel):
     model_config = {"extra": "allow"}
 
 
-def create_mcp_server(settings: Settings, application: ToolApplication) -> Server[Any, Any]:
-    """Create the protocol server and register transport-independent handlers."""
-    server: Server[Any, Any] = Server(
-        settings.mcp_server_name,
-        version="1.1.0",
-        instructions=SERVER_INSTRUCTIONS,
-    )
-    tools = create_tools()
+RequestContext = ServerRequestContext[Dict[str, Any]]
+
+
+def create_mcp_server(settings: Settings, application: ToolApplication) -> Server[Dict[str, Any]]:
+    """Create the protocol server and register transport-independent handlers.
+
+    Handlers are constructor arguments and return whole protocol results, which is
+    the SDK v2 shape for the 2026-07-28 specification. One server instance serves
+    both that specification and the deprecated handshake era.
+    """
+    tools = create_tools(settings.graph_api_version)
     resources = create_resources()
 
-    @server.list_tools()  # type: ignore[untyped-decorator]
-    async def handle_list_tools() -> list[Any]:
-        return tools
+    async def handle_list_tools(
+        context: RequestContext,
+        params: types.PaginatedRequestParams | None,
+    ) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=tools)
 
-    @server.call_tool()  # type: ignore[untyped-decorator]
-    async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> CallToolResult:
-        result = await application.execute_tool(name, arguments)
+    async def handle_call_tool(
+        context: RequestContext,
+        params: types.CallToolRequestParams,
+    ) -> types.CallToolResult:
+        result = await application.execute_tool(params.name, params.arguments or {})
         structured = (
             result.payload if isinstance(result.payload, dict) else {"result": result.payload}
         )
-        return CallToolResult(
-            content=[TextContent(type="text", text=result.text)],
-            structuredContent=structured,
-            isError=result.is_error,
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=result.text)],
+            structured_content=structured,
+            is_error=result.is_error,
         )
 
-    @server.list_resources()  # type: ignore[untyped-decorator]
-    async def handle_list_resources() -> list[Any]:
-        return resources
+    async def handle_list_resources(
+        context: RequestContext,
+        params: types.PaginatedRequestParams | None,
+    ) -> types.ListResourcesResult:
+        return types.ListResourcesResult(resources=resources)
 
-    @server.read_resource()  # type: ignore[untyped-decorator]
-    async def handle_read_resource(uri: AnyUrl) -> str:
-        return read_resource(uri)
+    async def handle_read_resource(
+        context: RequestContext,
+        params: types.ReadResourceRequestParams,
+    ) -> types.ReadResourceResult:
+        try:
+            text = read_resource(params.uri, settings.graph_api_version)
+        except ValueError as error:
+            # Unknown URIs are a caller mistake, so they are a protocol error rather
+            # than resource content. SDK v2 no longer wraps handler exceptions.
+            raise MCPError(types.INVALID_PARAMS, str(error)) from error
+        return types.ReadResourceResult(
+            contents=[
+                types.TextResourceContents(
+                    uri=params.uri,
+                    mime_type="text/markdown",
+                    text=text,
+                )
+            ]
+        )
 
-    return server
+    return Server(
+        settings.mcp_server_name,
+        version=__version__,
+        instructions=SERVER_INSTRUCTIONS,
+        cache_hints=CACHE_HINTS,
+        on_list_tools=handle_list_tools,
+        on_call_tool=handle_call_tool,
+        on_list_resources=handle_list_resources,
+        on_read_resource=handle_read_resource,
+    )
 
 
 def _api_key(settings: Settings) -> str | None:
     return settings.mcp_api_key.get_secret_value() if settings.mcp_api_key else None
 
 
-def create_streamable_http_app(settings: Settings, server: Server[Any, Any]) -> ASGIApp:
-    """Create the current MCP Streamable HTTP application."""
-    session_manager = StreamableHTTPSessionManager(
-        app=server,
-        json_response=False,
-        stateless=False,
-    )
+def create_streamable_http_app(settings: Settings, server: Server[Dict[str, Any]]) -> ASGIApp:
+    """Create the current MCP Streamable HTTP application.
 
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
-            yield
-
-    app = Starlette(
-        routes=[Mount("/mcp", app=session_manager.handle_request)],
-        lifespan=lifespan,
+    Stateless mode is the default because the 2026-07-28 specification carries the
+    protocol version, client identity, and capabilities on every request, so requests
+    no longer have to reach the instance that served the handshake.
+    """
+    app = server.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=settings.mcp_json_response,
+        stateless_http=settings.mcp_stateless_http,
+        host=settings.mcp_host,
+        debug=settings.log_level == "DEBUG",
     )
     cors_app = CORSMiddleware(
         app,
         allow_origins=settings.cors_allowed_origins,
         allow_methods=["GET", "POST", "DELETE"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "MCP-Protocol-Version",
-            "Mcp-Session-Id",
-        ],
+        allow_headers=MCP_REQUEST_HEADERS,
         expose_headers=["Mcp-Session-Id"],
     )
     return HttpSecurityMiddleware(
@@ -143,8 +191,16 @@ def create_streamable_http_app(settings: Settings, server: Server[Any, Any]) -> 
     )
 
 
-def create_sse_app(settings: Settings, server: Server[Any, Any]) -> ASGIApp:
-    """Create the legacy MCP SSE application."""
+def create_sse_app(settings: Settings, server: Server[Dict[str, Any]]) -> ASGIApp:
+    """Create the deprecated MCP HTTP+SSE application.
+
+    The 2026-07-28 specification deprecates this transport with a one-year transition
+    window. Use streamable-http unless a client cannot speak it yet.
+    """
+    logger.warning(
+        "The sse transport is deprecated by the 2026-07-28 MCP specification; "
+        "migrate clients to MCP_TRANSPORT=streamable-http"
+    )
     sse = SseServerTransport("/messages/")
 
     async def handle_sse(request: Request) -> PlainTextResponse:
@@ -163,7 +219,7 @@ def create_sse_app(settings: Settings, server: Server[Any, Any]) -> ASGIApp:
         app,
         allow_origins=settings.cors_allowed_origins,
         allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=MCP_REQUEST_HEADERS,
     )
     return HttpSecurityMiddleware(
         cors_app,
@@ -177,7 +233,7 @@ def create_openapi_app(settings: Settings, application: ToolApplication) -> ASGI
     app = FastAPI(
         title="Unified Microsoft MCP API",
         description="OpenAPI interface for Azure CLI and Microsoft Graph tools",
-        version="1.1.0",
+        version=__version__,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -220,7 +276,7 @@ def create_openapi_app(settings: Settings, application: ToolApplication) -> ASGI
 
 async def run_transport(
     settings: Settings,
-    server: Server[Any, Any],
+    server: Server[Dict[str, Any]],
     application: ToolApplication,
 ) -> None:
     """Run the selected transport until shutdown."""

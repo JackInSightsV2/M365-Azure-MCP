@@ -2,10 +2,11 @@ import asyncio
 import shutil
 import subprocess
 import time
+from contextlib import asynccontextmanager
 
-import httpx
+import httpx2 as httpx
 import pytest
-from mcp import ClientSession
+from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -161,46 +162,58 @@ async def test_openapi_execution_requires_bearer_token(docker_compose_env):
     assert forbidden_origin.status_code == 403
 
 
-async def assert_mcp_contract(session):
-    initialization = await session.initialize()
-    assert initialization.instructions
-    assert "graph_command" in initialization.instructions
-    tools = await session.list_tools()
+@asynccontextmanager
+async def authenticated_http_streams(url):
+    """Streamable HTTP transport carrying the container's bearer token."""
+    async with httpx.AsyncClient(headers=AUTH_HEADERS, follow_redirects=True) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as streams:
+            yield streams
+
+
+@asynccontextmanager
+async def sse_streams(url):
+    """Deprecated HTTP+SSE transport, which only speaks the handshake era."""
+    async with sse_client(url, headers=AUTH_HEADERS) as streams:
+        yield streams
+
+
+@asynccontextmanager
+async def stdio_streams(parameters):
+    async with stdio_client(parameters) as streams:
+        yield streams
+
+
+async def assert_mcp_contract(client):
+    assert client.instructions
+    assert "graph_command" in client.instructions
+    tools = await client.list_tools()
     assert {tool.name for tool in tools.tools} == {
         "execute_azure_cli_command",
         "graph_command",
     }
-    result = await session.call_tool("graph_command", {"command": "me"})
-    assert result.isError is not True
+    result = await client.call_tool("graph_command", {"command": "me"})
+    assert result.is_error is not True
     assert result.content
     assert "Mock User" in result.content[0].text
 
 
 @pytest.mark.asyncio
 async def test_streamable_http_mcp_contract(docker_compose_env):
-    async with httpx.AsyncClient(headers=AUTH_HEADERS, follow_redirects=True) as client:
-        async with streamable_http_client(
-            "http://localhost:18080/mcp",
-            http_client=client,
-        ) as (read_stream, write_stream, _session_id):
-            async with ClientSession(read_stream, write_stream) as session:
-                await assert_mcp_contract(session)
+    async with Client(authenticated_http_streams("http://localhost:18080/mcp")) as client:
+        assert client.protocol_version == "2026-07-28"
+        await assert_mcp_contract(client)
 
 
 @pytest.mark.asyncio
 async def test_sse_mcp_contract(docker_compose_env):
     assert await wait_for_service("http://localhost:18082/health")
-    async with sse_client(
-        "http://localhost:18082/sse",
-        headers=AUTH_HEADERS,
-    ) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await assert_mcp_contract(session)
+    async with Client(sse_streams("http://localhost:18082/sse"), mode="legacy") as client:
+        await assert_mcp_contract(client)
 
 
 @pytest.mark.asyncio
 async def test_stdio_mcp_tool_call(docker_compose_env):
-    """Initialize an MCP stdio session and invoke a tool through Docker."""
+    """Open an MCP stdio connection and invoke a tool through Docker."""
     parameters = StdioServerParameters(
         command="docker",
         args=[
@@ -215,20 +228,19 @@ async def test_stdio_mcp_tool_call(docker_compose_env):
         ],
     )
 
-    async with stdio_client(parameters) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            assert {tool.name for tool in tools.tools} == {
-                "execute_azure_cli_command",
-                "graph_command",
-            }
+    async with Client(stdio_streams(parameters)) as client:
+        assert client.protocol_version == "2026-07-28"
+        tools = await client.list_tools()
+        assert {tool.name for tool in tools.tools} == {
+            "execute_azure_cli_command",
+            "graph_command",
+        }
 
-            result = await session.call_tool(
-                "execute_azure_cli_command",
-                {"command": "az account show"},
-            )
+        result = await client.call_tool(
+            "execute_azure_cli_command",
+            {"command": "az account show"},
+        )
 
-    assert result.isError is not True
+    assert result.is_error is not True
     assert result.content
     assert "Mock output for command: az account show" in result.content[0].text

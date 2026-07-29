@@ -333,7 +333,7 @@ az group list
 az vm list --resource-group example-rg
 ```
 
-`graph_command` accepts a Microsoft Graph v1.0 path, an HTTP method, and an optional JSON body:
+`graph_command` accepts a Microsoft Graph path, an HTTP method, and an optional JSON body:
 
 ```text
 command: users
@@ -346,13 +346,26 @@ data: {"displayName": "New name"}
 
 Graph writes require an application or managed identity with the necessary Microsoft Graph application permissions.
 
+Paths resolve against the Microsoft Graph API version in `GRAPH_API_VERSION`. `v1.0` is the default and the only generally available version. `beta` is a preview endpoint that can change without notice, so do not depend on it in production.
+
+### MCP protocol version
+
+The server implements the [2026-07-28 MCP specification](https://modelcontextprotocol.io/specification/2026-07-28) and still answers clients on the older handshake versions (2024-11-05 through 2025-11-25), so no client has to be upgraded in step with the server. Each connection picks its version from the first request it sends.
+
+What the newer specification changes for this server:
+
+- HTTP requests are self-describing, so `MCP_STATELESS_HTTP` defaults to `true` and no session state is kept between requests. Several replicas can sit behind an ordinary round-robin load balancer. Set it to `false` to keep `Mcp-Session-Id` sessions for a client that needs them.
+- Tool, resource, and discovery listings carry cache hints, so clients can reuse them instead of re-listing on every connection.
+- `MCP_JSON_RESPONSE=true` answers with a single JSON body instead of an SSE stream, which suits gateways that do not stream.
+- The `sse` transport is deprecated by the specification, with a one-year transition window. Move clients to `streamable-http`.
+
 ### Transport options
 
 | Transport | Setting | Endpoint | Use |
 | --- | --- | --- | --- |
 | stdio | `MCP_TRANSPORT=stdio` | process input/output | Normal local IDE use; default |
 | Streamable HTTP | `MCP_TRANSPORT=streamable-http` | `/mcp` | Shared or remote MCP server |
-| SSE | `MCP_TRANSPORT=sse` | `/sse` | Compatibility with older clients |
+| SSE | `MCP_TRANSPORT=sse` | `/sse` | Deprecated; compatibility with older clients |
 | OpenAPI | `MCP_TRANSPORT=openapi` | `/docs` | Direct REST integrations |
 
 For HTTP deployments, set `MCP_API_KEY`, use TLS, and place the server behind network access controls. The built-in server binds to `127.0.0.1` by default.

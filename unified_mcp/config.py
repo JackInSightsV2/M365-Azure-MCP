@@ -111,6 +111,10 @@ class Settings(BaseSettings):
         alias="GRAPH_SCOPES",
     )
 
+    # Microsoft Graph API version. v1.0 is generally available; beta is preview only
+    # and can change without notice.
+    graph_api_version: str = Field(default="v1.0", alias="GRAPH_API_VERSION")
+
     # Operation execution settings
     operation_timeout: int = Field(default=300, ge=1, le=3600, alias="OPERATION_TIMEOUT")
     max_concurrent_operations: int = Field(
@@ -127,6 +131,11 @@ class Settings(BaseSettings):
     mcp_host: str = Field(default="127.0.0.1", alias="MCP_HOST")
     mcp_port: int = Field(default=8001, alias="MCP_PORT")
     mcp_api_key: Optional[SecretStr] = Field(default=None, alias="MCP_API_KEY")
+    # The 2026-07-28 specification makes every request self-describing, so the HTTP
+    # transport runs without sessions and scales behind a plain load balancer.
+    mcp_stateless_http: bool = Field(default=True, alias="MCP_STATELESS_HTTP")
+    # Answer with a single JSON response instead of an SSE stream.
+    mcp_json_response: bool = Field(default=False, alias="MCP_JSON_RESPONSE")
     cors_allowed_origins: list[str] = Field(
         default=["http://127.0.0.1:8001", "http://localhost:8001"],
         alias="CORS_ALLOWED_ORIGINS",
@@ -178,6 +187,21 @@ class Settings(BaseSettings):
                 f"Invalid MCP transport mode: '{v}'. Must be one of: {', '.join(valid_transports)}"
             )
         return v_lower
+
+    @field_validator("graph_api_version")
+    @classmethod
+    def validate_graph_api_version(cls, v: str) -> str:
+        """Validate the Microsoft Graph API version."""
+        valid_versions = ["v1.0", "beta"]
+        normalized = v.strip().lower()
+        if normalized == "1.0":
+            normalized = "v1.0"
+        if normalized not in valid_versions:
+            raise ValueError(
+                f"Invalid Microsoft Graph API version: '{v}'. "
+                f"Must be one of: {', '.join(valid_versions)}"
+            )
+        return normalized
 
     @field_validator("graph_scopes")
     @classmethod

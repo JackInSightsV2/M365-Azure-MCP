@@ -8,6 +8,8 @@ import logging
 import os
 import sys
 
+from mcp.types.version import SUPPORTED_PROTOCOL_VERSIONS
+
 from unified_mcp.application import ToolApplication, process_tool_call
 from unified_mcp.config import Settings
 from unified_mcp.services.azure_cli_service import AzureCliService
@@ -77,9 +79,15 @@ def build_application(settings: Settings) -> ToolApplication:
 def log_runtime_configuration(settings: Settings) -> None:
     """Log transport security and non-interactive authentication risks consistently."""
     logger.info("MCP transport: %s", settings.mcp_transport)
+    logger.info("MCP protocol versions served: %s", ", ".join(SUPPORTED_PROTOCOL_VERSIONS))
     logger.info("Execution policy: %s", settings.execution_policy.value)
+    logger.info("Microsoft Graph API version: %s", settings.graph_api_version)
     if settings.mcp_transport == "stdio":
         return
+    logger.info(
+        "HTTP session handling: %s",
+        "stateless" if settings.mcp_stateless_http else "sessioned",
+    )
     if settings.mcp_api_key is None:
         logger.warning(
             "HTTP transport has no MCP_API_KEY; bind only to loopback or a trusted network"

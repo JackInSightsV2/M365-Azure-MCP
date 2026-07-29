@@ -8,11 +8,15 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Protocol
 
 from mcp.types import Resource, TextContent, Tool
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+DEFAULT_GRAPH_API_VERSION = "v1.0"
 
 SERVER_INSTRUCTIONS = (
     "Use execute_azure_cli_command for Azure CLI commands beginning with 'az'. "
-    "Use graph_command for Microsoft Graph v1.0 paths and an explicit HTTP method for writes. "
+    "Use graph_command for Microsoft Graph paths and an explicit HTTP method for writes. "
+    "Graph paths are resolved against the API version the server is configured with, v1.0 "
+    "by default. "
     "Prefer read operations, inspect help resources before unfamiliar actions, and never place "
     "credentials in tool arguments. Authentication prompts may require the user to complete "
     "device sign-in and retry."
@@ -160,7 +164,7 @@ class ToolApplication:
             raise errors[0]
 
 
-def create_tools() -> list[Tool]:
+def create_tools(graph_api_version: str = DEFAULT_GRAPH_API_VERSION) -> list[Tool]:
     """Return the canonical tool schemas exposed by every MCP transport."""
     return [
         Tool(
@@ -169,7 +173,7 @@ def create_tools() -> list[Tool]:
                 "Execute an Azure CLI command. Commands must begin with 'az' and are subject "
                 "to the configured execution policy."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "command": {
@@ -185,9 +189,10 @@ def create_tools() -> list[Tool]:
         Tool(
             name="graph_command",
             description=(
-                "Call a Microsoft Graph v1.0 endpoint with GET, POST, PUT, PATCH, or DELETE."
+                f"Call a Microsoft Graph {graph_api_version} endpoint with GET, POST, PUT, "
+                "PATCH, or DELETE."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "command": {
@@ -213,21 +218,21 @@ def create_resources() -> list[Resource]:
     """Return concise operational help resources."""
     return [
         Resource(
-            uri=AnyUrl("azure://help"),
+            uri="azure://help",
             name="Azure CLI Help",
             description="Authentication, policy, and Azure CLI examples",
-            mimeType="text/markdown",
+            mime_type="text/markdown",
         ),
         Resource(
-            uri=AnyUrl("graph://help"),
+            uri="graph://help",
             name="Microsoft Graph Help",
             description="Authentication, policy, and Graph request examples",
-            mimeType="text/markdown",
+            mime_type="text/markdown",
         ),
     ]
 
 
-def read_resource(uri: AnyUrl) -> str:
+def read_resource(uri: str, graph_api_version: str = DEFAULT_GRAPH_API_VERSION) -> str:
     """Read a canonical help resource."""
     if str(uri) == "azure://help":
         return """# Azure CLI tool
@@ -242,9 +247,10 @@ Examples: `az account show`, `az group list`, `az vm list`.
 Commands are parsed without a shell and sensitive flags are redacted from logs.
 """
     if str(uri) == "graph://help":
-        return """# Microsoft Graph tool
+        return f"""# Microsoft Graph tool
 
-Use `graph_command` with a Graph v1.0 path such as `me`, `users`, or `groups`.
+Use `graph_command` with a Graph path such as `me`, `users`, or `groups`. Paths are resolved
+against the `{graph_api_version}` API version, set with `GRAPH_API_VERSION`.
 The default method is GET; POST, PUT, PATCH, and DELETE require suitable application permissions.
 
 Device-code authentication is used by default. Managed identity and client-secret application

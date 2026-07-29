@@ -180,3 +180,29 @@ async def test_cancelled_application_token_request_does_not_poison_broker():
     assert token.token == "recovered"
     assert credential.calls == 2
     await broker.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("v1.0", "https://graph.microsoft.com/v1.0/users"),
+        ("beta", "https://graph.microsoft.com/beta/users"),
+    ],
+)
+async def test_requests_target_the_configured_graph_api_version(
+    mock_token_broker, configured, expected
+):
+    service = GraphService(
+        Settings(GRAPH_API_VERSION=configured),
+        token_broker=mock_token_broker,
+    )
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"value": []}
+    client = AsyncMock()
+    client.request.return_value = response
+    service._get_http_client = MagicMock(return_value=client)
+
+    await service.execute_command("/users")
+
+    assert client.request.await_args.args[1] == expected

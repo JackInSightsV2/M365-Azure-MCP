@@ -112,3 +112,28 @@ def test_managed_identity_auth_config():
         "scopes": ["https://graph.microsoft.com/.default"],
     }
     assert settings.is_graph_read_only_mode is False
+
+
+def test_streamable_http_defaults_to_stateless():
+    """The 2026-07-28 specification needs no session affinity."""
+    settings = Settings(MCP_TRANSPORT="streamable-http")
+
+    assert settings.mcp_stateless_http is True
+    assert settings.mcp_json_response is False
+
+
+def test_graph_api_version_defaults_to_generally_available():
+    assert Settings().graph_api_version == "v1.0"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("beta", "beta"), ("BETA", "beta"), ("V1.0", "v1.0"), ("1.0", "v1.0")],
+)
+def test_graph_api_version_is_normalized(configured, expected):
+    assert Settings(GRAPH_API_VERSION=configured).graph_api_version == expected
+
+
+def test_graph_api_version_rejects_unknown_versions():
+    with pytest.raises(ValueError, match="Invalid Microsoft Graph API version"):
+        Settings(GRAPH_API_VERSION="v2.0")

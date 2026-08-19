@@ -168,6 +168,7 @@ async def assert_mcp_contract(session):
     tools = await session.list_tools()
     assert {tool.name for tool in tools.tools} == {
         "execute_azure_cli_command",
+        "azure_rest_request",
         "graph_command",
     }
     result = await session.call_tool("graph_command", {"command": "me"})
@@ -221,6 +222,7 @@ async def test_stdio_mcp_tool_call(docker_compose_env):
             tools = await session.list_tools()
             assert {tool.name for tool in tools.tools} == {
                 "execute_azure_cli_command",
+                "azure_rest_request",
                 "graph_command",
             }
 

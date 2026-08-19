@@ -16,6 +16,7 @@ Add this to `.cursor/mcp.json` in a project or `~/.cursor/mcp.json` globally:
       "args": [
         "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ]
     }
@@ -37,6 +38,7 @@ Add this to `.agents/mcp_config.json` in a workspace or `~/.gemini/config/mcp_co
       "args": [
         "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ]
     }
@@ -59,6 +61,7 @@ Add this to `opencode.json`:
       "command": [
         "docker", "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ],
       "enabled": true
@@ -79,6 +82,7 @@ command = "docker"
 args = [
   "run", "--rm", "-i",
   "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+  "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
   "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
 ]
 ```
@@ -121,6 +125,7 @@ The resulting Cursor or Antigravity section looks like this:
   "run", "--rm", "-i",
   "-e", "EXECUTION_POLICY=read-only",
   "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+  "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
   "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
 ]
 ```

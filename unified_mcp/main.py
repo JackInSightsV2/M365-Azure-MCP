@@ -11,6 +11,7 @@ import sys
 from unified_mcp.application import ToolApplication, process_tool_call
 from unified_mcp.config import Settings
 from unified_mcp.services.azure_cli_service import AzureCliService
+from unified_mcp.services.azure_rest_service import AzureRestService
 from unified_mcp.services.graph_service import GraphService
 from unified_mcp.transports import create_mcp_server, run_transport
 
@@ -62,15 +63,21 @@ def configure_logging(settings: Settings) -> None:
 def build_application(settings: Settings) -> ToolApplication:
     """Compose real adapters, or explicit fakes for requested test mode."""
     if settings.mock_mode:
-        from unified_mcp.testing import FakeAzureCliService, FakeGraphService
+        from unified_mcp.testing import FakeAzureCliService, FakeAzureRestService, FakeGraphService
 
         logger.warning("MOCK_MODE enabled: using deterministic test adapters")
-        return ToolApplication(FakeAzureCliService(), FakeGraphService())
+        return ToolApplication(
+            FakeAzureCliService(),
+            FakeGraphService(),
+            FakeAzureRestService(),
+        )
 
     policy = settings.build_execution_policy()
+    arm_service = AzureRestService(settings, policy=policy) if settings.enable_azure_rest else None
     return ToolApplication(
         AzureCliService(settings, policy=policy),
         GraphService(settings, policy=policy),
+        arm_service,
     )
 
 

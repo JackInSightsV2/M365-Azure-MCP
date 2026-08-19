@@ -12,6 +12,8 @@ from pydantic import AnyUrl, BaseModel, ConfigDict, Field, ValidationError
 
 SERVER_INSTRUCTIONS = (
     "Use execute_azure_cli_command for Azure CLI commands beginning with 'az'. "
+    "Use azure_rest_request for Azure Resource Manager REST paths when the Azure CLI is "
+    "unavailable or blocked by Conditional Access; include the api-version query parameter. "
     "Use graph_command for Microsoft Graph v1.0 paths and an explicit HTTP method for writes. "
     "Prefer read operations, inspect help resources before unfamiliar actions, and never place "
     "credentials in tool arguments. Authentication prompts may require the user to complete "
@@ -40,6 +42,19 @@ class GraphExecutor(Protocol):
     async def close(self) -> None: ...
 
 
+class RestExecutor(Protocol):
+    """Azure Resource Manager REST port shared by real and fake adapters."""
+
+    async def execute_command(
+        self,
+        command: str,
+        method: str = "GET",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]: ...
+
+    async def close(self) -> None: ...
+
+
 class AzureToolInput(BaseModel):
     """Typed Azure CLI tool input."""
 
@@ -49,6 +64,15 @@ class AzureToolInput(BaseModel):
 
 class GraphToolInput(BaseModel):
     """Typed Microsoft Graph tool input."""
+
+    command: str = Field(min_length=1)
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
+    data: Optional[Dict[str, Any]] = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AzureRestToolInput(BaseModel):
+    """Typed Azure Resource Manager REST tool input."""
 
     command: str = Field(min_length=1)
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
@@ -73,9 +97,11 @@ class ToolApplication:
         self,
         azure_service: AzureExecutor | None,
         graph_service: GraphExecutor | None,
+        arm_service: RestExecutor | None = None,
     ) -> None:
         self.azure_service = azure_service
         self.graph_service = graph_service
+        self.arm_service = arm_service
         self.logger = logging.getLogger(__name__)
 
     async def execute_tool(
@@ -93,6 +119,32 @@ class ToolApplication:
             payload = await self.azure_service.execute_azure_cli(request.command)
             is_error = payload.startswith("Error:") or "\nError:" in payload
             return ToolExecutionResult(name, payload, payload, is_error)
+
+        if name == "azure_rest_request":
+            if self.arm_service is None:
+                return self._error(name, "Azure REST service not enabled")
+            try:
+                arm_request = AzureRestToolInput.model_validate(arguments)
+            except ValidationError as error:
+                return self._error(name, self._validation_message(error))
+            arm_payload = await self.arm_service.execute_command(
+                arm_request.command,
+                arm_request.method,
+                arm_request.data,
+            )
+            return ToolExecutionResult(
+                name,
+                arm_payload,
+                self._format_graph(
+                    GraphToolInput(
+                        command=arm_request.command,
+                        method=arm_request.method,
+                        data=arm_request.data,
+                    ),
+                    arm_payload,
+                ),
+                not bool(arm_payload.get("success")),
+            )
 
         if name == "graph_command":
             if self.graph_service is None:
@@ -149,7 +201,7 @@ class ToolApplication:
     async def close(self) -> None:
         """Close both adapters, even when the first close fails."""
         errors: list[Exception] = []
-        for service in (self.azure_service, self.graph_service):
+        for service in (self.azure_service, self.graph_service, self.arm_service):
             if service is None:
                 continue
             try:
@@ -177,6 +229,36 @@ def create_tools() -> list[Tool]:
                         "minLength": 1,
                         "description": "Azure CLI command, for example 'az account show'",
                     }
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="azure_rest_request",
+            description=(
+                "Call an Azure Resource Manager REST endpoint (https://management.azure.com) "
+                "with GET, POST, PUT, PATCH, or DELETE. Use this when the Azure CLI is "
+                "unavailable or blocked by Conditional Access. Include the api-version query "
+                "parameter in the path."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "ARM path with api-version, for example "
+                            "'subscriptions?api-version=2022-12-01'"
+                        ),
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "default": "GET",
+                    },
+                    "data": {"type": "object", "description": "Body for write requests"},
                 },
                 "required": ["command"],
                 "additionalProperties": False,
@@ -240,6 +322,11 @@ Use `execute_azure_cli_command` with a command beginning with `az`.
 
 Examples: `az account show`, `az group list`, `az vm list`.
 Commands are parsed without a shell and sensitive flags are redacted from logs.
+
+If the Azure CLI is unavailable or blocked by Conditional Access, use
+`azure_rest_request` instead. It calls Azure Resource Manager REST directly and signs
+in with a configurable public client (`AZURE_ARM_CLIENT_ID`, Azure PowerShell by
+default). Example path: `subscriptions?api-version=2022-12-01`.
 """
     if str(uri) == "graph://help":
         return """# Microsoft Graph tool
@@ -258,7 +345,10 @@ async def process_tool_call(
     arguments: Dict[str, Any],
     azure_service: AzureExecutor | None,
     graph_service: GraphExecutor | None,
+    arm_service: RestExecutor | None = None,
 ) -> List[TextContent]:
     """Compatibility wrapper for callers of the original transport helper."""
-    result = await ToolApplication(azure_service, graph_service).execute_tool(name, arguments)
+    result = await ToolApplication(azure_service, graph_service, arm_service).execute_tool(
+        name, arguments
+    )
     return [TextContent(type="text", text=result.text)]

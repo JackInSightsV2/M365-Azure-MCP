@@ -83,6 +83,7 @@ Save as `.cursor/mcp.json` in a project or `~/.cursor/mcp.json` globally:
       "args": [
         "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ]
     }
@@ -105,6 +106,7 @@ Save as `.agents/mcp_config.json` in a workspace or `~/.gemini/config/mcp_config
       "args": [
         "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ]
     }
@@ -128,6 +130,7 @@ Add to `opencode.json`:
       "command": [
         "docker", "run", "--rm", "-i",
         "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+        "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
         "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
       ],
       "enabled": true
@@ -149,6 +152,7 @@ command = "docker"
 args = [
   "run", "--rm", "-i",
   "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+  "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
   "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
 ]
 ```
@@ -158,7 +162,7 @@ args = [
 The configuration tells the client to run:
 
 ```text
-docker run --rm -i -v unified-microsoft-mcp-azure:/home/app/.azure ghcr.io/jackinsightsv2/azure-m365-mcp:latest
+docker run --rm -i -v unified-microsoft-mcp-azure:/home/app/.azure -v unified-microsoft-mcp-identity:/home/app/.IdentityService ghcr.io/jackinsightsv2/azure-m365-mcp:latest
 ```
 
 You do not run that command separately. The AI client runs it when required.
@@ -229,6 +233,7 @@ For example:
   "run", "--rm", "-i",
   "-e", "EXECUTION_POLICY=read-only",
   "-v", "unified-microsoft-mcp-azure:/home/app/.azure",
+  "-v", "unified-microsoft-mcp-identity:/home/app/.IdentityService",
   "ghcr.io/jackinsightsv2/azure-m365-mcp:latest"
 ]
 ```
@@ -281,11 +286,29 @@ Use device-code sign-in. No client secret is required. The server provides a cod
 
 Never paste passwords, client secrets, API keys, or access tokens into an AI chat or tool command.
 
+### Signing in only once
+
+The device-code sign-in is cached, so after the first sign-in the server refreshes access silently instead of prompting again. To keep the sign-in across container restarts, mount a volume at `/home/app/.IdentityService` (the configuration examples above already do this). The Docker Compose setup uses a named `identity-cache` volume for the same purpose. Set `GRAPH_TOKEN_CACHE=false` to disable caching and prompt every time.
+
+The Docker image encrypts the cached tokens at rest using a keyring (Secret Service). By default the keyring auto-unlocks; set `KEYRING_PASSWORD` (ideally from a secret store) for password-protected encryption, or `ENABLE_KEYRING=false` to store the cache as a plaintext file instead. The keyring store lives on the same `/home/app/.IdentityService` volume, so remove that volume to force a fresh sign-in. Treat the volume as sensitive regardless of mode.
+
+### When Conditional Access blocks the Azure CLI
+
+Some tenants block the Azure CLI's application id with a Conditional Access policy, so `az login` fails even though your account is valid. In that case use the `azure_rest_request` tool, which signs in with a different, configurable public client (`AZURE_ARM_CLIENT_ID`, Azure PowerShell by default) that the policy may allow. See [Tools](#tools).
+
 ### Unattended or shared server
 
 Administrators can configure managed identity or a service principal through environment variables. See [env.example](env.example). These options are intended for managed deployments, not normal desktop setup.
 
 The server stops an Azure command if the configured managed identity or service-principal sign-in fails. It will not silently use a different cached identity.
+
+To turn an interactive sign-in into a service principal, an administrator with rights to create app registrations and assign roles can run the bundled helper in a terminal:
+
+```bash
+unified-microsoft-mcp-bootstrap-spn --role Reader
+```
+
+It signs in (device code if needed), creates the app registration and role assignment, and prints the `AZURE_APP_*` environment variables to set. The generated secret is long-lived and bypasses MFA, so store it in a secret manager and scope the role tightly. This grants Azure Resource Manager access only; Microsoft Graph application permissions require separate admin consent.
 
 ## Troubleshooting
 
@@ -332,6 +355,18 @@ az account show
 az group list
 az vm list --resource-group example-rg
 ```
+
+`azure_rest_request` calls the Azure Resource Manager REST API (`https://management.azure.com`) directly, without the Azure CLI binary. Use it when the Azure CLI is unavailable or its app id is blocked by Conditional Access. Include the `api-version` query parameter:
+
+```text
+command: subscriptions?api-version=2022-12-01
+method: GET
+
+command: subscriptions/{id}/resourceGroups?api-version=2021-04-01
+method: GET
+```
+
+Interactive sign-in for this tool uses `AZURE_ARM_CLIENT_ID` (the Azure PowerShell public client by default), which a locked-down tenant may permit even when the Azure CLI is blocked. Disable the tool with `ENABLE_AZURE_REST=false`.
 
 `graph_command` accepts a Microsoft Graph v1.0 path, an HTTP method, and an optional JSON body:
 

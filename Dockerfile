@@ -21,21 +21,55 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Install the Secret Service stack so the device-code token cache is encrypted at
+# rest instead of stored in plaintext. PyGObject is what lets azure-identity's
+# msal-extensions talk to libsecret; gnome-keyring provides the Secret Service and
+# dbus its session bus. Build tools for PyGObject are removed after the wheel builds.
+# PyGObject is pinned to the last release that targets gobject-introspection 1.x,
+# which is what Debian bookworm ships.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsecret-1-0 \
+    gir1.2-secret-1 \
+    gir1.2-glib-2.0 \
+    libgirepository-1.0-1 \
+    libcairo2 \
+    gnome-keyring \
+    dbus \
+    dbus-x11 \
+    && apt-get install -y --no-install-recommends \
+    gcc \
+    pkg-config \
+    libgirepository1.0-dev \
+    libcairo2-dev \
+    && python -m pip install --no-cache-dir "PyGObject==3.48.2" \
+    && apt-get purge -y gcc pkg-config libgirepository1.0-dev libcairo2-dev \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install the server with standard Python packaging.
 COPY pyproject.toml README.md LICENSE ./
 COPY unified_mcp/ ./unified_mcp/
 RUN python -m pip install --no-cache-dir .
 
-# Run without root privileges and keep Azure CLI state in a mountable location.
+# Entrypoint brings up the keyring (best effort) before running the server.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Run without root privileges and keep Azure CLI state and the device-code sign-in
+# cache in mountable locations.
 RUN useradd --create-home --shell /bin/bash app \
-    && mkdir -p /home/app/.azure /tmp/logs \
-    && chown -R app:app /home/app/.azure /tmp/logs /app
+    && mkdir -p /home/app/.azure /home/app/.IdentityService/xdg-data/keyrings /tmp/logs \
+    && chown -R app:app /home/app/.azure /home/app/.IdentityService /tmp/logs /app
 
 USER app
 
 ENV LOG_LEVEL=INFO \
     LOG_FILE=/tmp/logs/unified_mcp.log \
     AZURE_CONFIG_DIR=/home/app/.azure \
+    XDG_RUNTIME_DIR=/tmp/runtime-app \
+    XDG_DATA_HOME=/home/app/.IdentityService/xdg-data \
+    ENABLE_KEYRING=true \
     MCP_TRANSPORT=stdio \
     MCP_HOST=0.0.0.0 \
     MCP_PORT=8001
@@ -45,4 +79,5 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD if [ "$MCP_TRANSPORT" = "stdio" ]; then python -c "import unified_mcp"; else curl --fail --silent "http://127.0.0.1:${MCP_PORT}/health" >/dev/null; fi
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["unified-microsoft-mcp"]

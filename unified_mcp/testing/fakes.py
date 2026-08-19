@@ -67,6 +67,34 @@ class FakeAzureCliService:
         """Match the production service lifecycle contract."""
 
 
+class FakeAzureRestService:
+    """Azure Resource Manager REST adapter with deterministic JSON responses."""
+
+    async def execute_command(
+        self,
+        command: str,
+        method: str = "GET",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        path = command.split("?", 1)[0].strip("/")
+        if path == "subscriptions":
+            payload: Any = {
+                "value": [
+                    {
+                        "subscriptionId": "fake-subscription-id",
+                        "displayName": "Fake Subscription",
+                        "state": "Enabled",
+                    }
+                ]
+            }
+        else:
+            payload = {"message": f"Mock ARM response for {method.upper()} {command}"}
+        return {"success": True, "data": payload, "status_code": 200}
+
+    async def close(self) -> None:
+        """Match the production service lifecycle contract."""
+
+
 class FakeGraphService:
     """Microsoft Graph adapter with deterministic JSON responses."""
 

@@ -11,8 +11,15 @@ from datetime import datetime
 from typing import Any, Protocol, TypeAlias, cast
 
 from azure.core.credentials import AccessToken
-from azure.identity import DeviceCodeCredential
+from azure.identity import DeviceCodeCredential, TokenCachePersistenceOptions
 from azure.identity.aio import ClientSecretCredential, ManagedIdentityCredential
+
+from unified_mcp.token_cache import load_auth_record, save_auth_record
+
+# Shared name for the on-disk MSAL token cache. Device-code profiles for different
+# client ids (for example Graph and Azure Resource Manager) coexist in one cache as
+# separate accounts, so a single name is correct.
+TOKEN_CACHE_NAME = "unified-microsoft-mcp.cache"
 
 
 @dataclass(frozen=True)
@@ -44,11 +51,18 @@ class ManagedIdentityProfile:
 
 @dataclass(frozen=True)
 class DeviceCodeProfile:
-    """Delegated Microsoft Graph authentication using a device code."""
+    """Delegated authentication using a device code.
+
+    When ``cache_enabled`` is set and ``auth_record_path`` points to a writable
+    location, the sign-in is persisted so subsequent runs refresh silently instead
+    of prompting again.
+    """
 
     tenant_id: str
     client_id: str
     scopes: tuple[str, ...]
+    cache_enabled: bool = True
+    auth_record_path: str | None = None
     kind: str = "device_code"
 
 
@@ -88,6 +102,7 @@ class TokenBroker:
         self._credential: Any | None = None
         self._token_task: asyncio.Task[AccessToken] | None = None
         self._cached_token: AccessToken | None = None
+        self._auth_record_saved = False
         self._lock = asyncio.Lock()
 
     @property
@@ -106,10 +121,20 @@ class TokenBroker:
         callback: Callable[[str, str, datetime], None],
     ) -> Any:
         if isinstance(profile, DeviceCodeProfile):
+            options: dict[str, Any] = {}
+            if profile.cache_enabled:
+                options["cache_persistence_options"] = TokenCachePersistenceOptions(
+                    name=TOKEN_CACHE_NAME,
+                    allow_unencrypted_storage=True,
+                )
+                record = load_auth_record(profile.auth_record_path)
+                if record is not None:
+                    options["authentication_record"] = record
             return DeviceCodeCredential(
                 tenant_id=profile.tenant_id,
                 client_id=profile.client_id,
                 prompt_callback=callback,
+                **options,
             )
         if isinstance(profile, ServicePrincipalProfile):
             return ClientSecretCredential(
@@ -127,8 +152,27 @@ class TokenBroker:
             )
         get_token = self._credential.get_token
         if inspect.iscoroutinefunction(get_token):
-            return cast(AccessToken, await get_token(*self.scopes))
-        return cast(AccessToken, await asyncio.to_thread(get_token, *self.scopes))
+            token = cast(AccessToken, await get_token(*self.scopes))
+        else:
+            token = cast(AccessToken, await asyncio.to_thread(get_token, *self.scopes))
+        self._persist_auth_record()
+        return token
+
+    def _persist_auth_record(self) -> None:
+        """Persist the device-code authentication record once, enabling silent refresh."""
+        profile = self.profile
+        if (
+            self._auth_record_saved
+            or not isinstance(profile, DeviceCodeProfile)
+            or not profile.cache_enabled
+            or profile.auth_record_path is None
+        ):
+            return
+        record = getattr(self._credential, "_auth_record", None)
+        if record is None:
+            return
+        save_auth_record(profile.auth_record_path, record)
+        self._auth_record_saved = True
 
     async def get_token(self, prompt_timeout: float = 3.0) -> AccessToken:
         """Get a token, preserving device authentication after the prompt is returned."""

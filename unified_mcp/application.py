@@ -11,13 +11,23 @@ from mcp.types import Resource, TextContent, Tool
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, ValidationError
 
 SERVER_INSTRUCTIONS = (
-    "Use execute_azure_cli_command for Azure CLI commands beginning with 'az'. "
-    "Use azure_rest_request for Azure Resource Manager REST paths when the Azure CLI is "
-    "unavailable or blocked by Conditional Access; include the api-version query parameter. "
-    "Use graph_command for Microsoft Graph v1.0 paths and an explicit HTTP method for writes. "
-    "Prefer read operations, inspect help resources before unfamiliar actions, and never place "
-    "credentials in tool arguments. Authentication prompts may require the user to complete "
-    "device sign-in and retry."
+    "This server connects to the user's Microsoft cloud: Microsoft 365 (also called M365 "
+    "or Office 365), Entra ID (Azure AD), and Microsoft Azure. Use it whenever the user "
+    "asks about their Microsoft account, tenant, email, calendar, Teams, SharePoint or "
+    "OneDrive files, users, groups, licenses, Intune devices, sign-in or audit logs, or "
+    "Azure subscriptions and resources — do not answer those from general knowledge when "
+    "these tools can fetch the real data.\n\n"
+    "- graph_command: Microsoft 365 and Entra ID (Azure AD) via the Microsoft Graph API. "
+    "Read or manage users, groups, licenses, mail, calendar, Teams, files, devices, and "
+    "directory data. GET reads; POST/PUT/PATCH/DELETE write.\n"
+    "- execute_azure_cli_command: Microsoft Azure resources via the Azure CLI (commands "
+    "begin with 'az') — subscriptions, resource groups, virtual machines, storage, "
+    "networking, costs.\n"
+    "- azure_rest_request: the same Azure resources via the Azure Resource Manager REST "
+    "API, for when the Azure CLI is unavailable or blocked by Conditional Access.\n\n"
+    "Prefer read operations, inspect the help resources before unfamiliar actions, and "
+    "never place credentials in tool arguments. Authentication prompts may require the "
+    "user to complete a device sign-in and retry."
 )
 
 
@@ -218,7 +228,10 @@ def create_tools() -> list[Tool]:
         Tool(
             name="execute_azure_cli_command",
             description=(
-                "Execute an Azure CLI command. Commands must begin with 'az' and are subject "
+                "Inspect and manage Microsoft Azure resources by running Azure CLI commands "
+                "(must begin with 'az'). Use for Azure subscriptions, resource groups, virtual "
+                "machines, storage accounts, networking, role assignments, and cost data. "
+                "Examples: 'az account show', 'az group list', 'az vm list -o table'. Subject "
                 "to the configured execution policy."
             ),
             inputSchema={
@@ -227,7 +240,10 @@ def create_tools() -> list[Tool]:
                     "command": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Azure CLI command, for example 'az account show'",
+                        "description": (
+                            "Azure CLI command beginning with 'az', for example "
+                            "'az account show' or 'az group list'"
+                        ),
                     }
                 },
                 "required": ["command"],
@@ -237,10 +253,13 @@ def create_tools() -> list[Tool]:
         Tool(
             name="azure_rest_request",
             description=(
-                "Call an Azure Resource Manager REST endpoint (https://management.azure.com) "
-                "with GET, POST, PUT, PATCH, or DELETE. Use this when the Azure CLI is "
-                "unavailable or blocked by Conditional Access. Include the api-version query "
-                "parameter in the path."
+                "Inspect and manage Microsoft Azure resources through the Azure Resource "
+                "Manager REST API (https://management.azure.com), without the Azure CLI. Use "
+                "this when the Azure CLI is unavailable or blocked by Conditional Access, or "
+                "for ARM endpoints the CLI does not cover — subscriptions, resource groups, "
+                "resources, deployments, role assignments, and costs. Include the api-version "
+                "query parameter. Example: 'subscriptions?api-version=2022-12-01'. GET reads; "
+                "POST/PUT/PATCH/DELETE write."
             ),
             inputSchema={
                 "type": "object",
@@ -249,8 +268,8 @@ def create_tools() -> list[Tool]:
                         "type": "string",
                         "minLength": 1,
                         "description": (
-                            "ARM path with api-version, for example "
-                            "'subscriptions?api-version=2022-12-01'"
+                            "Azure Resource Manager path including the api-version query "
+                            "parameter, for example 'subscriptions?api-version=2022-12-01'"
                         ),
                     },
                     "method": {
@@ -267,7 +286,13 @@ def create_tools() -> list[Tool]:
         Tool(
             name="graph_command",
             description=(
-                "Call a Microsoft Graph v1.0 endpoint with GET, POST, PUT, PATCH, or DELETE."
+                "Connect to the user's Microsoft 365 and Entra ID (Azure AD) via the Microsoft "
+                "Graph API — the way to reach their Microsoft account and tenant. Also known "
+                "as Microsoft 365, M365, Office 365, Azure AD, or Entra. Read or manage users, "
+                "groups, licenses, mail and Outlook, calendar, OneDrive and SharePoint files, "
+                "Teams, devices and Intune, and sign-in or audit logs. Provide a Microsoft "
+                "Graph v1.0 path and HTTP method (GET reads; POST/PUT/PATCH/DELETE write). "
+                "Examples: 'me', 'users', 'users/{id}', 'groups', 'me/messages'."
             ),
             inputSchema={
                 "type": "object",
@@ -275,14 +300,18 @@ def create_tools() -> list[Tool]:
                     "command": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Graph path such as 'me', 'users', or 'groups'",
+                        "description": (
+                            "Microsoft Graph v1.0 path such as 'me', 'users', 'users/{id}', "
+                            "'groups', or 'me/messages'"
+                        ),
                     },
                     "method": {
                         "type": "string",
                         "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
                         "default": "GET",
+                        "description": "GET reads; POST, PUT, PATCH, DELETE write",
                     },
-                    "data": {"type": "object", "description": "Body for write requests"},
+                    "data": {"type": "object", "description": "JSON body for write requests"},
                 },
                 "required": ["command"],
                 "additionalProperties": False,
@@ -302,8 +331,8 @@ def create_resources() -> list[Resource]:
         ),
         Resource(
             uri=AnyUrl("graph://help"),
-            name="Microsoft Graph Help",
-            description="Authentication, policy, and Graph request examples",
+            name="Microsoft 365 & Entra ID Help",
+            description="Users, mail, Teams, groups, licenses, devices — auth, policy, and examples",
             mimeType="text/markdown",
         ),
     ]
@@ -329,9 +358,18 @@ in with a configurable public client (`AZURE_ARM_CLIENT_ID`, Azure PowerShell by
 default). Example path: `subscriptions?api-version=2022-12-01`.
 """
     if str(uri) == "graph://help":
-        return """# Microsoft Graph tool
+        return """# Microsoft 365 and Entra ID tool
 
-Use `graph_command` with a Graph v1.0 path such as `me`, `users`, or `groups`.
+Use `graph_command` to reach the user's Microsoft 365 (M365 / Office 365) and Entra ID
+(Azure AD) data through the Microsoft Graph API. Give a Graph v1.0 path and a method.
+
+Common paths:
+- Signed-in user: `me`, `me/messages`, `me/events`, `me/drive/root/children`
+- Directory: `users`, `users/{id}`, `groups`, `groups/{id}/members`
+- Licensing: `users/{id}/licenseDetails`, `subscribedSkus`
+- Devices/Intune: `deviceManagement/managedDevices`
+- Security: `auditLogs/signIns`
+
 The default method is GET; POST, PUT, PATCH, and DELETE require suitable application permissions.
 
 Device-code authentication is used by default. Managed identity and client-secret application

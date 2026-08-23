@@ -23,6 +23,7 @@ Repository = "https://github.com/JackInSightsV2/Azure-M365-MCP"
 
 [project.scripts]
 unified-microsoft-mcp = "unified_mcp.main:run"
+unified-microsoft-mcp-bootstrap-spn = "unified_mcp.bootstrap:main"
 
 [project.optional-dependencies]
 dev = [

@@ -112,3 +112,47 @@ def test_managed_identity_auth_config():
         "scopes": ["https://graph.microsoft.com/.default"],
     }
     assert settings.is_graph_read_only_mode is False
+
+
+def test_arm_auth_profile_defaults_to_device_code(monkeypatch):
+    """Without credentials, ARM signs in via device code using the configured client."""
+    for name in ("AZURE_APP_TENANT_ID", "AZURE_APP_CLIENT_ID", "AZURE_APP_CLIENT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+    profile = Settings().get_arm_auth_profile()
+
+    assert profile.kind == "device_code"
+    assert profile.client_id == "1950a258-227b-4e31-a9cf-717495945fc2"
+    assert profile.scopes == ("https://management.azure.com/.default",)
+    assert profile.auth_record_path.endswith("arm.auth-record.json")
+
+
+def test_arm_auth_profile_uses_service_principal(monkeypatch):
+    """Configured Azure credentials produce an application identity for ARM."""
+    settings = Settings(
+        AZURE_APP_TENANT_ID="tenant",
+        AZURE_APP_CLIENT_ID="client",
+        AZURE_APP_CLIENT_SECRET="secret",
+    )
+
+    profile = settings.get_arm_auth_profile()
+
+    assert profile.kind == "service_principal"
+    assert profile.scopes == ("https://management.azure.com/.default",)
+
+
+def test_arm_client_id_is_configurable():
+    settings = Settings(AZURE_ARM_CLIENT_ID="04b07795-8ddb-461a-bbee-02f9e1bf7b46")
+    assert settings.get_arm_auth_profile().client_id == "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+
+
+def test_graph_device_profile_carries_cache_settings(monkeypatch):
+    for name in ("GRAPH_APP_CLIENT_ID", "GRAPH_APP_TENANT_ID", "USE_APP_REG_CLIENTID", "TENANTID"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(GRAPH_TOKEN_CACHE=False)
+
+    profile = settings.get_graph_auth_profile()
+
+    assert profile.kind == "device_code"
+    assert profile.cache_enabled is False
+    assert profile.auth_record_path.endswith("graph.auth-record.json")

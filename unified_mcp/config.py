@@ -1,6 +1,7 @@
 """Configuration management for Unified Microsoft MCP Server."""
 
 import json
+import os
 from typing import Any, Dict, Optional
 
 from pydantic import Field, SecretStr, computed_field, field_validator
@@ -75,6 +76,26 @@ class Settings(BaseSettings):
     graph_client_id: str = Field(
         default="14d82eec-204b-4c2f-b7e8-296a70dab67e",  # Microsoft Graph PowerShell public client
         alias="GRAPH_CLIENT_ID",
+    )
+
+    # Device-code token cache. Persisting the sign-in lets subsequent runs refresh
+    # silently instead of prompting again. Set the directory to a mounted volume to
+    # keep the sign-in across container restarts.
+    graph_token_cache: bool = Field(default=True, alias="GRAPH_TOKEN_CACHE")
+    token_cache_dir: Optional[str] = Field(default=None, alias="TOKEN_CACHE_DIR")
+
+    # Azure Resource Manager REST access. Authenticates with a configurable public
+    # client so Conditional Access policies that block the Azure CLI's own app id can
+    # be satisfied by an allowed identity (for example Azure PowerShell). The default
+    # is the Azure PowerShell public client id.
+    enable_azure_rest: bool = Field(default=True, alias="ENABLE_AZURE_REST")
+    azure_arm_client_id: str = Field(
+        default="1950a258-227b-4e31-a9cf-717495945fc2",  # Azure PowerShell public client
+        alias="AZURE_ARM_CLIENT_ID",
+    )
+    azure_arm_scope: str = Field(
+        default="https://management.azure.com/.default",
+        alias="AZURE_ARM_SCOPE",
     )
 
     # Custom app registration settings (optional - enables read/write mode)
@@ -322,6 +343,13 @@ class Settings(BaseSettings):
 
         return secret.get_secret_value() if secret is not None else None
 
+    def _auth_record_path(self, label: str) -> str:
+        """Return the file that persists a device-code sign-in for one client."""
+        directory = self.token_cache_dir or os.path.expanduser(
+            os.path.join("~", ".IdentityService")
+        )
+        return os.path.join(directory, f"unified-microsoft-mcp.{label}.auth-record.json")
+
     def get_graph_auth_profile(self) -> GraphAuthProfile:
         """Resolve Graph settings into a typed authentication profile."""
         config = self.get_graph_auth_config()
@@ -343,6 +371,37 @@ class Settings(BaseSettings):
             tenant_id=str(config["tenant_id"]),
             client_id=str(config["client_id"]),
             scopes=scopes,
+            cache_enabled=self.graph_token_cache,
+            auth_record_path=self._auth_record_path("graph"),
+        )
+
+    def get_arm_auth_profile(self) -> GraphAuthProfile:
+        """Resolve an authentication profile for Azure Resource Manager REST access.
+
+        Prefers a non-interactive identity when configured; otherwise falls back to a
+        device-code sign-in against a configurable public client. That client is what
+        lets a locked-down tenant use an allowed app id instead of the Azure CLI's own.
+        """
+        scopes = (self.azure_arm_scope,)
+        if self.use_managed_identity:
+            return ManagedIdentityProfile(client_id=self.managed_identity_client_id, scopes=scopes)
+        if self.has_azure_credentials():
+            assert self.azure_tenant_id is not None
+            assert self.azure_client_id is not None
+            assert self.azure_client_secret is not None
+            return ServicePrincipalProfile(
+                tenant_id=self.azure_tenant_id,
+                client_id=self.azure_client_id,
+                client_secret=self.azure_client_secret.get_secret_value(),
+                scopes=scopes,
+            )
+        tenant_id = self.azure_tenant_id or self.graph_tenant_id or "organizations"
+        return DeviceCodeProfile(
+            tenant_id=tenant_id,
+            client_id=self.azure_arm_client_id,
+            scopes=scopes,
+            cache_enabled=self.graph_token_cache,
+            auth_record_path=self._auth_record_path("arm"),
         )
 
     def build_execution_policy(self) -> ExecutionPolicy:
